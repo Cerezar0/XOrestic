@@ -1,7 +1,6 @@
 const WebSocket = require('ws');
 
-// Если мы на Render, берем порт оттуда (process.env.PORT). 
-// Если на компьютере — используем 8080.
+// Render автоматически выдает порт через process.env.PORT
 const port = process.env.PORT || 8080;
 const wss = new WebSocket.Server({ port: port });
 console.log('Сервер XOrestic запущен на порту ' + port);
@@ -12,14 +11,18 @@ let roomIdCounter = 1;
 wss.on('connection', (ws) => {
     ws.on('message', (message) => {
         try {
-            const data = JSON.parse(message);
+            const data = JSON.parse(message.toString('utf8')); // Явно читаем UTF-8 (для русских ников)
             
             // Игрок нажал "Найти игру"
             if (data.type === 'find_game') {
                 const mode = data.mode; 
-                const queue = queues[mode];
+                let queue = queues[mode];
                 
-                // Если в очереди уже кто-то есть — создаем игру
+                // 1. Очищаем очередь от "мертвых" подключений (если кто-то закрыл вкладку)
+                queue = queue.filter(client => client.readyState === WebSocket.OPEN);
+                queues[mode] = queue; // Обновляем очередь
+                
+                // 2. Если в очереди уже кто-то есть — создаем игру
                 if (queue.length > 0) {
                     const opponent = queue.shift(); 
                     
@@ -47,7 +50,7 @@ wss.on('connection', (ws) => {
                     
                     console.log(`Игра ${roomId} создана в режиме ${mode}`);
                 } else {
-                    // Если очередь пуста — ставим игрока ждать
+                    // 3. Если очередь пуста — ставим игрока ждать
                     ws.nickname = data.nickname;
                     queue.push(ws);
                     ws.send(JSON.stringify({ type: 'waiting' }));
@@ -67,7 +70,7 @@ wss.on('connection', (ws) => {
                 });
             }
 
-            // Игрок вышел из игры
+            // Игрок вышел из игры (нажал "В меню" или "Отмена")
             if (data.type === 'leave_game') {
                 wss.clients.forEach((client) => {
                     if (client !== ws && client.roomId === ws.roomId && client.readyState === WebSocket.OPEN) {
@@ -83,9 +86,11 @@ wss.on('connection', (ws) => {
 
     // Если соединение закрылось (вкладку закрыли)
     ws.on('close', () => {
+        // Удаляем из очередей
         queues['3x3'] = queues['3x3'].filter(client => client !== ws);
         queues['4x4'] = queues['4x4'].filter(client => client !== ws);
         
+        // Если был в комнате — сообщаем сопернику
         if (ws.roomId) {
             wss.clients.forEach((client) => {
                 if (client !== ws && client.roomId === ws.roomId && client.readyState === WebSocket.OPEN) {
